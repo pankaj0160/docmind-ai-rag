@@ -27,10 +27,6 @@ st.set_page_config(
 
 st.markdown("""
 <style>
-.main {
-    background-color: #0f172a;
-}
-
 .stApp {
     background: linear-gradient(135deg, #0f172a, #1e293b);
     color: white;
@@ -40,31 +36,25 @@ h1, h2, h3 {
     color: white;
 }
 
-.chat-box {
-    padding: 1rem;
-    border-radius: 12px;
-    margin-bottom: 10px;
+.stChatMessage {
+    border-radius: 15px;
+    padding: 10px;
 }
 
-.user-msg {
-    background-color: #2563eb;
-    color: white;
-}
-
-.bot-msg {
-    background-color: #1e293b;
-    color: white;
-}
-
-.stButton>button {
+.stButton > button {
     width: 100%;
-    border-radius: 10px;
+    border-radius: 12px;
     height: 3em;
     font-weight: bold;
+    border: none;
 }
 
-.stTextInput>div>div>input {
-    border-radius: 10px;
+.stTextInput > div > div > input {
+    border-radius: 12px;
+}
+
+[data-testid="stSidebar"] {
+    background-color: #111827;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -76,12 +66,27 @@ h1, h2, h3 {
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 
+if "docs_processed" not in st.session_state:
+    st.session_state.docs_processed = False
+
+if "uploaded_file_names" not in st.session_state:
+    st.session_state.uploaded_file_names = []
+
+# ============================================================
+# RESET APP FUNCTION
+# ============================================================
+
+def reset_app():
+    st.session_state.chat_history = []
+    st.session_state.docs_processed = False
+    st.session_state.uploaded_file_names = []
+
 # ============================================================
 # HEADER
 # ============================================================
 
 st.title("🧠 DocMind AI")
-st.caption("Multi-Personality AI Document Assistant powered by RAG + Mistral")
+st.caption("AI-Powered Multi-Personality Document Assistant using RAG + Mistral")
 
 # ============================================================
 # SIDEBAR
@@ -91,13 +96,13 @@ with st.sidebar:
     st.header("⚙️ Controls")
 
     uploaded_files = st.file_uploader(
-        "Upload PDF or TXT files",
+        "📂 Upload PDF or TXT files",
         type=["pdf", "txt"],
         accept_multiple_files=True
     )
 
     personality_mode = st.selectbox(
-        "Choose Personality Mode",
+        "🎭 Choose Personality",
         [
             "Professional",
             "Fun",
@@ -110,8 +115,25 @@ with st.sidebar:
     st.markdown("---")
 
     process_btn = st.button("📄 Process Documents")
-
     clear_btn = st.button("🗑 Clear Database")
+
+# ============================================================
+# FILE REMOVAL DETECTION
+# ============================================================
+
+current_file_names = []
+
+if uploaded_files:
+    current_file_names = [file.name for file in uploaded_files]
+
+if (
+    st.session_state.uploaded_file_names
+    and current_file_names != st.session_state.uploaded_file_names
+):
+    clear_database()
+    reset_app()
+    st.warning("Uploaded files changed. Previous session cleared.")
+    st.rerun()
 
 # ============================================================
 # CLEAR DATABASE
@@ -119,9 +141,14 @@ with st.sidebar:
 
 if clear_btn:
     with st.spinner("Clearing database..."):
-        clear_database()
+        success = clear_database()
 
-    st.success("Database cleared successfully.")
+    if success:
+        reset_app()
+        st.success("Database cleared successfully.")
+        st.rerun()
+    else:
+        st.error("Failed to clear database.")
 
 # ============================================================
 # PROCESS DOCUMENTS
@@ -133,6 +160,9 @@ if process_btn:
     else:
         with st.spinner("Processing documents..."):
 
+            # Replace old documents completely
+            clear_database()
+
             saved_paths = save_uploaded_files(uploaded_files)
 
             documents = load_documents(saved_paths)
@@ -141,13 +171,19 @@ if process_btn:
 
             create_or_update_vectorstore(chunks)
 
+            st.session_state.docs_processed = True
+            st.session_state.uploaded_file_names = current_file_names
+            st.session_state.chat_history = []
+
         st.success("Documents processed successfully.")
+        st.rerun()
 
 # ============================================================
-# QUERY INPUT
+# EMPTY STATE
 # ============================================================
 
-query = st.chat_input("Ask a question about your documents...")
+if not st.session_state.docs_processed:
+    st.info("📂 Upload documents and click 'Process Documents' to start chatting.")
 
 # ============================================================
 # DISPLAY CHAT HISTORY
@@ -158,16 +194,27 @@ for message in st.session_state.chat_history:
         st.markdown(message["content"])
 
         if "sources" in message:
-            with st.expander("View Retrieved Chunks"):
+            with st.expander("📄 View Retrieved Chunks"):
                 for i, doc in enumerate(message["sources"], 1):
                     st.markdown(f"### Chunk {i}")
                     st.write(doc.page_content)
+
+# ============================================================
+# CHAT INPUT
+# ============================================================
+
+query = st.chat_input("Ask a question about your documents...")
 
 # ============================================================
 # HANDLE QUERY
 # ============================================================
 
 if query:
+
+    if not st.session_state.docs_processed:
+        st.warning("Please upload and process documents first.")
+        st.stop()
+
     st.session_state.chat_history.append({
         "role": "user",
         "content": query
@@ -187,7 +234,7 @@ if query:
 
                 st.markdown(answer)
 
-                with st.expander("View Retrieved Chunks"):
+                with st.expander("📄 View Retrieved Chunks"):
                     for i, doc in enumerate(docs, 1):
                         st.markdown(f"### Chunk {i}")
                         st.write(doc.page_content)

@@ -2,8 +2,11 @@
 
 import os
 os.environ["TRANSFORMERS_NO_TF"] = "1"
+os.environ["USE_TF"] = "0"
+os.environ["DISABLE_TF"] = "1"
 
 import shutil
+import gc
 from dotenv import load_dotenv
 
 from langchain_community.document_loaders import PyPDFLoader, TextLoader
@@ -22,11 +25,14 @@ load_dotenv()
 # ============================================================
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
 UPLOAD_DIR = os.path.join(BASE_DIR, "uploaded_docs")
 DB_DIR = os.path.join(BASE_DIR, "chroma_db")
 
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(DB_DIR, exist_ok=True)
+
+COLLECTION_NAME = "docmind_collection"
 
 # ============================================================
 # EMBEDDING MODEL
@@ -53,10 +59,14 @@ llm = ChatMistralAI(
 print("LLM loaded successfully.")
 
 # ============================================================
-# SAVE FILES
+# SAVE UPLOADED FILES
 # ============================================================
 
 def save_uploaded_files(uploaded_files):
+    """
+    Save uploaded files locally.
+    """
+
     saved_paths = []
 
     for file in uploaded_files:
@@ -76,6 +86,10 @@ def save_uploaded_files(uploaded_files):
 # ============================================================
 
 def load_documents(file_paths):
+    """
+    Load PDF and TXT files.
+    """
+
     documents = []
 
     for path in file_paths:
@@ -92,14 +106,19 @@ def load_documents(file_paths):
             documents.extend(loader.load())
 
     print(f"Total documents loaded: {len(documents)}")
+
     return documents
 
 
 # ============================================================
-# SPLIT DOCUMENTS
+# CHUNK DOCUMENTS
 # ============================================================
 
 def split_documents(documents):
+    """
+    Split documents into chunks.
+    """
+
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=500,
         chunk_overlap=100,
@@ -123,31 +142,38 @@ def split_documents(documents):
 # ============================================================
 
 def create_or_update_vectorstore(chunks):
-    print("Creating/updating vector database...")
+    """
+    Create fresh vector database.
+    Old database is replaced completely.
+    """
+
+    print("Creating fresh vector database...")
 
     vector_store = Chroma(
         persist_directory=DB_DIR,
         embedding_function=embedding_model,
-        collection_name="docmind_collection"
+        collection_name=COLLECTION_NAME
     )
 
     vector_store.add_documents(chunks)
 
-    print("Vector database updated successfully.")
+    print("Vector database created successfully.")
 
-    return vector_store
+    del vector_store
+    gc.collect()
 
 
 def load_vectorstore():
-    print("Loading vector database...")
+    """
+    Load existing vector store.
+    """
 
     vector_store = Chroma(
         persist_directory=DB_DIR,
         embedding_function=embedding_model,
-        collection_name="docmind_collection"
+        collection_name=COLLECTION_NAME
     )
 
-    print("Vector database loaded.")
     return vector_store
 
 
@@ -157,43 +183,61 @@ def load_vectorstore():
 
 def clear_database():
     """
-    Safely clear vector DB and uploaded docs.
+    Safely clear Chroma database + uploaded docs.
     """
 
-    import gc
-    import time
-
     try:
-        print("Starting database cleanup...")
+        print("Clearing database...")
 
-        # force cleanup of python objects
+        try:
+            vector_store = Chroma(
+                persist_directory=DB_DIR,
+                embedding_function=embedding_model,
+                collection_name=COLLECTION_NAME
+            )
+
+            vector_store.delete_collection()
+
+            del vector_store
+
+        except Exception:
+            pass
+
         gc.collect()
-
-        # small wait so windows releases file handles
-        time.sleep(2)
-
-        if os.path.exists(DB_DIR):
-            shutil.rmtree(DB_DIR, ignore_errors=True)
 
         if os.path.exists(UPLOAD_DIR):
             shutil.rmtree(UPLOAD_DIR, ignore_errors=True)
 
-        os.makedirs(DB_DIR, exist_ok=True)
-        os.makedirs(UPLOAD_DIR, exist_ok=True)
+        if os.path.exists(DB_DIR):
+            shutil.rmtree(DB_DIR, ignore_errors=True)
 
-        print("Database cleared.")
+        os.makedirs(UPLOAD_DIR, exist_ok=True)
+        os.makedirs(DB_DIR, exist_ok=True)
+
+        print("Database cleared successfully.")
 
         return True
 
     except Exception as e:
-        print("Clear database error:", e)
+        print("Clear DB Error:", e)
         return False
 
+
 # ============================================================
-# RETRIEVER
+# QUERY DOCUMENTS
 # ============================================================
 
-def get_retriever():
+def query_documents(query, personality_mode):
+    """
+    Retrieve relevant chunks and generate answer.
+    """
+
+    print("\n===================================")
+    print("RAG PIPELINE STARTED")
+    print("===================================")
+
+    print(f"User Query: {query}")
+
     vector_store = load_vectorstore()
 
     retriever = vector_store.as_retriever(
@@ -205,37 +249,25 @@ def get_retriever():
         }
     )
 
-    print("Retriever created.")
-    return retriever
+    print("Searching relevant chunks...")
 
-
-# ============================================================
-# QUERY DOCUMENTS (MAIN RAG PIPELINE)
-# ============================================================
-
-def query_documents(query, personality_mode):
-    print("\n===================================")
-    print("RAG PIPELINE STARTED")
-    print("===================================")
-
-    print(f"\nUser Query: {query}")
-
-    retriever = get_retriever()
-
-    print("\nSearching relevant chunks...")
     docs = retriever.invoke(query)
 
-    print(f"\nRetrieved {len(docs)} chunks")
+    print(f"Retrieved {len(docs)} chunks")
 
     print("\n===== RETRIEVED CHUNKS =====")
 
     for i, doc in enumerate(docs):
-        print(f"\nChunk {i+1}:")
-        print(doc.page_content[:500])
+        print(f"\nChunk {i+1}")
+        print("SOURCE:", doc.metadata.get("source", "Unknown"))
+        print("PAGE:", doc.metadata.get("page", "N/A"))
+        print(doc.page_content[:300])
 
     print("============================")
 
-    context = "\n\n".join([doc.page_content for doc in docs])
+    context = "\n\n".join(
+        [doc.page_content for doc in docs]
+    )
 
     personality_prompt = get_personality_prompt(personality_mode)
 
@@ -262,12 +294,14 @@ Question:
         "question": query
     })
 
-    print("\nSending retrieved context to LLM...")
+    print("Sending retrieved context to LLM...")
 
     response = llm.invoke(final_prompt)
 
-    print("LLM response generated.")
-    print("===================================")
+    del retriever
+    del vector_store
+    gc.collect()
+
     print("RAG PIPELINE COMPLETED")
     print("===================================\n")
 
