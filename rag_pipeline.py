@@ -157,14 +157,19 @@ def load_vectorstore():
 
 def clear_database():
     """
-    Safely clear vector DB and uploaded files.
+    Safely clear vector DB and uploaded docs.
     """
 
     import gc
     import time
 
     try:
+        print("Starting database cleanup...")
+
+        # force cleanup of python objects
         gc.collect()
+
+        # small wait so windows releases file handles
         time.sleep(2)
 
         if os.path.exists(DB_DIR):
@@ -176,11 +181,13 @@ def clear_database():
         os.makedirs(DB_DIR, exist_ok=True)
         os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-        print("Database cleared successfully.")
+        print("Database cleared.")
+
+        return True
 
     except Exception as e:
-        print(f"Error clearing database: {e}")
-
+        print("Clear database error:", e)
+        return False
 
 # ============================================================
 # RETRIEVER
