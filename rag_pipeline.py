@@ -8,6 +8,7 @@ os.environ["DISABLE_TF"] = "1"
 import shutil
 import gc
 from dotenv import load_dotenv
+import tempfile
 
 from langchain_community.document_loaders import PyPDFLoader, TextLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -141,26 +142,25 @@ def split_documents(documents):
 # VECTOR STORE
 # ============================================================
 
+
 def create_or_update_vectorstore(chunks):
-    """
-    Create fresh vector database.
-    Old database is replaced completely.
-    """
+    global retriever
 
-    print("Creating fresh vector database...")
+    if not chunks:
+        raise ValueError("No document chunks found.")
 
-    vector_store = Chroma(
-        persist_directory=DB_DIR,
-        embedding_function=embedding_model,
+    db_dir = tempfile.mkdtemp()
+
+    vector_store = Chroma.from_documents(
+        documents=chunks,
+        embedding=embedding_model,
+        persist_directory=db_dir,
         collection_name=COLLECTION_NAME
     )
 
-    vector_store.add_documents(chunks)
+    retriever = vector_store.as_retriever(search_kwargs={"k": 4})
 
-    print("Vector database created successfully.")
-
-    del vector_store
-    gc.collect()
+    return vector_store
 
 
 def load_vectorstore():
