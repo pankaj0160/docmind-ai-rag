@@ -7,8 +7,8 @@ os.environ["DISABLE_TF"] = "1"
 
 import shutil
 import gc
-from dotenv import load_dotenv
 import tempfile
+from dotenv import load_dotenv
 
 from langchain_community.document_loaders import PyPDFLoader, TextLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -26,14 +26,18 @@ load_dotenv()
 # ============================================================
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-
 UPLOAD_DIR = os.path.join(BASE_DIR, "uploaded_docs")
-DB_DIR = os.path.join(BASE_DIR, "chroma_db")
 
 os.makedirs(UPLOAD_DIR, exist_ok=True)
-os.makedirs(DB_DIR, exist_ok=True)
 
 COLLECTION_NAME = "docmind_collection"
+
+# ============================================================
+# GLOBAL RETRIEVER
+# ============================================================
+
+retriever = None
+vector_store = None
 
 # ============================================================
 # EMBEDDING MODEL
@@ -64,10 +68,6 @@ print("LLM loaded successfully.")
 # ============================================================
 
 def save_uploaded_files(uploaded_files):
-    """
-    Save uploaded files locally.
-    """
-
     saved_paths = []
 
     for file in uploaded_files:
@@ -76,7 +76,6 @@ def save_uploaded_files(uploaded_files):
         with open(file_path, "wb") as f:
             f.write(file.getbuffer())
 
-        print(f"Saved file: {file.name}")
         saved_paths.append(file_path)
 
     return saved_paths
@@ -87,26 +86,18 @@ def save_uploaded_files(uploaded_files):
 # ============================================================
 
 def load_documents(file_paths):
-    """
-    Load PDF and TXT files.
-    """
-
     documents = []
 
     for path in file_paths:
         extension = os.path.splitext(path)[1].lower()
 
         if extension == ".pdf":
-            print(f"Loading PDF: {path}")
             loader = PyPDFLoader(path)
             documents.extend(loader.load())
 
         elif extension == ".txt":
-            print(f"Loading TXT: {path}")
             loader = TextLoader(path, encoding="utf-8")
             documents.extend(loader.load())
-
-    print(f"Total documents loaded: {len(documents)}")
 
     return documents
 
@@ -116,10 +107,6 @@ def load_documents(file_paths):
 # ============================================================
 
 def split_documents(documents):
-    """
-    Split documents into chunks.
-    """
-
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=500,
         chunk_overlap=100,
@@ -128,13 +115,6 @@ def split_documents(documents):
 
     chunks = splitter.split_documents(documents)
 
-    print(f"Total chunks created: {len(chunks)}")
-
-    if chunks:
-        print("\n===== SAMPLE CHUNK =====")
-        print(chunks[0].page_content[:500])
-        print("========================\n")
-
     return chunks
 
 
@@ -142,36 +122,31 @@ def split_documents(documents):
 # VECTOR STORE
 # ============================================================
 
-
 def create_or_update_vectorstore(chunks):
     global retriever
+    global vector_store
 
     if not chunks:
-        raise ValueError("No document chunks found.")
+        raise ValueError("No document chunks provided.")
 
-    db_dir = tempfile.mkdtemp()
+    print("Creating fresh vector database...")
+
+    temp_dir = tempfile.mkdtemp()
 
     vector_store = Chroma.from_documents(
         documents=chunks,
         embedding=embedding_model,
-        persist_directory=db_dir,
+        persist_directory=temp_dir,
         collection_name=COLLECTION_NAME
     )
 
-    retriever = vector_store.as_retriever(search_kwargs={"k": 4})
-
-    return vector_store
-
-
-def load_vectorstore():
-    """
-    Load existing vector store.
-    """
-
-    vector_store = Chroma(
-        persist_directory=DB_DIR,
-        embedding_function=embedding_model,
-        collection_name=COLLECTION_NAME
+    retriever = vector_store.as_retriever(
+        search_type="mmr",
+        search_kwargs={
+            "k": 4,
+            "fetch_k": 10,
+            "lambda_mult": 0.7
+        }
     )
 
     return vector_store
@@ -182,39 +157,22 @@ def load_vectorstore():
 # ============================================================
 
 def clear_database():
-    """
-    Safely clear Chroma database + uploaded docs.
-    """
+    global retriever
+    global vector_store
 
     try:
-        print("Clearing database...")
+        retriever = None
 
-        try:
-            vector_store = Chroma(
-                persist_directory=DB_DIR,
-                embedding_function=embedding_model,
-                collection_name=COLLECTION_NAME
-            )
-
-            vector_store.delete_collection()
-
+        if vector_store:
             del vector_store
-
-        except Exception:
-            pass
+            vector_store = None
 
         gc.collect()
 
         if os.path.exists(UPLOAD_DIR):
             shutil.rmtree(UPLOAD_DIR, ignore_errors=True)
 
-        if os.path.exists(DB_DIR):
-            shutil.rmtree(DB_DIR, ignore_errors=True)
-
         os.makedirs(UPLOAD_DIR, exist_ok=True)
-        os.makedirs(DB_DIR, exist_ok=True)
-
-        print("Database cleared successfully.")
 
         return True
 
@@ -228,42 +186,12 @@ def clear_database():
 # ============================================================
 
 def query_documents(query, personality_mode):
-    """
-    Retrieve relevant chunks and generate answer.
-    """
+    global retriever
 
-    print("\n===================================")
-    print("RAG PIPELINE STARTED")
-    print("===================================")
-
-    print(f"User Query: {query}")
-
-    vector_store = load_vectorstore()
-
-    retriever = vector_store.as_retriever(
-        search_type="mmr",
-        search_kwargs={
-            "k": 4,
-            "fetch_k": 10,
-            "lambda_mult": 0.7
-        }
-    )
-
-    print("Searching relevant chunks...")
+    if retriever is None:
+        raise ValueError("Please upload and process documents first.")
 
     docs = retriever.invoke(query)
-
-    print(f"Retrieved {len(docs)} chunks")
-
-    print("\n===== RETRIEVED CHUNKS =====")
-
-    for i, doc in enumerate(docs):
-        print(f"\nChunk {i+1}")
-        print("SOURCE:", doc.metadata.get("source", "Unknown"))
-        print("PAGE:", doc.metadata.get("page", "N/A"))
-        print(doc.page_content[:300])
-
-    print("============================")
 
     context = "\n\n".join(
         [doc.page_content for doc in docs]
@@ -294,15 +222,6 @@ Question:
         "question": query
     })
 
-    print("Sending retrieved context to LLM...")
-
     response = llm.invoke(final_prompt)
-
-    del retriever
-    del vector_store
-    gc.collect()
-
-    print("RAG PIPELINE COMPLETED")
-    print("===================================\n")
 
     return response.content, docs
