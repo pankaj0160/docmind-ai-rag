@@ -8,3 +8,7 @@ sentence-transformers
 pypdf
 python-dotenv
 langchain_mistralai
+
+protobuf==5.29.4
+opentelemetry-api==1.33.1
+opentelemetry-sdk==1.33.1
